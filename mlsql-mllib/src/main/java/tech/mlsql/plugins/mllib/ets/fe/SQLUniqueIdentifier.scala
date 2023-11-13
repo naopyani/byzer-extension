@@ -23,6 +23,7 @@ import scala.collection.mutable
 
 /**
  * 27/07/2022 hellozepp(lisheng.zhanglin@163.com)
+ * dp 唯一标识符算子
  */
 class SQLUniqueIdentifier(override val uid: String) extends SQLAlg with MllibFunctions with Functions with BaseParams with ETAuth {
   final val SOURCE_MODE_NEW = "new"

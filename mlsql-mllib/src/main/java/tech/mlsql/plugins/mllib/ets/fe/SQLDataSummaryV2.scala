@@ -1,7 +1,5 @@
 package tech.mlsql.plugins.mllib.ets.fe
 
-import java.util.Date
-
 import org.apache.spark.sql.expressions.UserDefinedFunction
 import org.apache.spark.sql.functions._
 import org.apache.spark.sql.types._
@@ -15,6 +13,7 @@ import tech.mlsql.common.utils.log.Logging
 import tech.mlsql.dsl.auth.ETAuth
 import tech.mlsql.dsl.auth.dsl.mmlib.ETMethod.ETMethod
 
+import java.util.Date
 import scala.collection.mutable
 import scala.collection.mutable.ArrayBuffer
 
@@ -72,8 +71,9 @@ class SQLDataSummaryV2(override val uid: String) extends SQLAlg with MllibFuncti
       ratio_expr.alias(sc.name + "_uniqueValueRatio")
     }).toArray,
     schema.map(sc => {
-      var count_distinct_expr: Column = lit(0)
-        if (!numeric_columns.contains(sc.name)) {
+      var count_distinct_expr: Column = lit(null)
+      if (!numeric_columns.contains(sc.name)) {
+        count_distinct_expr = lit(0)
         if (approx) {
           count_distinct_expr = approx_count_distinct(when(colWithFilterBlank(sc), col(sc.name)))
         } else {
@@ -181,24 +181,26 @@ class SQLDataSummaryV2(override val uid: String) extends SQLAlg with MllibFuncti
         }
 
         var e = ""
-        try {
-          if (el._1 != null) {
-            e = el._1.toString
+        if (el._1 != null || metricName != "categoryCount") {
+          try {
+            if (el._1 != null) {
+              e = el._1.toString
+            }
+            val intTypeList = Array("primaryKeyCandidate", "ordinalPosition", "dataLength", "maximumLength",
+              "minimumLength", "nonNullCount", "categoryCount")
+            // 'Max' and 'Min' are required to preserve decimal places, even though the value may be a string, because
+            // the decimal type appears as a long-tailed decimal
+            val nonFormat = Array("columnName", "dataType")
+            if (intTypeList.contains(metricName)) {
+              e = BigDecimal(e).setScale(0, BigDecimal.RoundingMode.HALF_UP).toLong.toString
+            } else if (nonFormat.contains(metricName)) {
+              // pass
+            } else {
+              e = BigDecimal(e).setScale(round_at, BigDecimal.RoundingMode.HALF_UP).toDouble.toString
+            }
+          } catch {
+            case _: Exception => //pass
           }
-          val intTypeList = Array("primaryKeyCandidate", "ordinalPosition", "dataLength", "maximumLength",
-            "minimumLength", "nonNullCount", "categoryCount", "totalCount")
-          // 'Max' and 'Min' are required to preserve decimal places, even though the value may be a string, because
-          // the decimal type appears as a long-tailed decimal
-          val nonFormat = Array("columnName", "dataType")
-          if (intTypeList.contains(metricName)) {
-            e = BigDecimal(e).setScale(0, BigDecimal.RoundingMode.HALF_UP).toLong.toString
-          } else if (nonFormat.contains(metricName)) {
-            // pass
-          } else {
-            e = BigDecimal(e).setScale(round_at, BigDecimal.RoundingMode.HALF_UP).toDouble.toString
-          }
-        } catch {
-          case _: Exception => //pass
         }
         e
       })
@@ -232,7 +234,7 @@ class SQLDataSummaryV2(override val uid: String) extends SQLAlg with MllibFuncti
           var percentile_expr = percentile_approx(filterExpr, lit(percentilePoints), lit(accuracy)).getItem(p._2)
             .alias(c + "_percentile_approx")
           if (accuracy == 0) {
-            percentile_expr = expr("percentile(nanvl(" + c + ",\"\"), " + p._1 + ")")
+            percentile_expr = expr("percentile(nanvl(`" + c + "`,\"\"), " + p._1 + ")")
               .alias(c + "_percentile_approx")
           }
           percentile_expr
@@ -248,7 +250,7 @@ class SQLDataSummaryV2(override val uid: String) extends SQLAlg with MllibFuncti
     val selectedMetrics = mutable.HashSet[String]()
     selectedMetrics ++= metrics
     ("%25,median,%75,blankValueRatio,dataLength,dataType,max,maximumLength,mean,min,minimumLength," +
-      "nonNullCount,nullValueRatio,skewness,totalCount,standardDeviation,standardError,uniqueValueRatio,categoryCount,primaryKeyCandidate,mode"
+      "nonNullCount,nullValueRatio,skewness,standardDeviation,standardError,uniqueValueRatio,categoryCount,primaryKeyCandidate,mode"
       ).split(",")
       .filter(selectedMetrics.contains)
   }
@@ -360,17 +362,11 @@ class SQLDataSummaryV2(override val uid: String) extends SQLAlg with MllibFuncti
     }.toArray
   }
 
-  def getTotalCount(schema: StructType, total: Long): Array[Column] = {
-    schema.map {
-      sc => lit(total).alias(sc.name + "_totalCount")
-    }.toArray
-  }
-
   def train(df: DataFrame, path: String, params: Map[String, String]): DataFrame = {
     val round_at = Integer.valueOf(params.getOrElse("roundAt", "2"))
     val selectedMetrics = params.getOrElse(DataSummary.metrics, "dataType,dataLength,max,min,maximumLength,minimumLength," +
       "mean,standardDeviation,standardError,nullValueRatio,blankValueRatio,nonNullCount,uniqueValueRatio," +
-      "primaryKeyCandidate,median,mode,totalCount").split(",").filter(!_.equals(""))
+      "primaryKeyCandidate,median,mode").split(",").filter(!_.equals(""))
     var relativeError = params.getOrElse("relativeError", "0.01").toDouble
     var approxCountDistinct = params.getOrElse("approxCountDistinct", "true").toBoolean
 
@@ -384,11 +380,8 @@ class SQLDataSummaryV2(override val uid: String) extends SQLAlg with MllibFuncti
       smallDatasetAccurately = false
     }
 
-    if (selectedMetrics.contains("totalCount") || smallDatasetAccurately) {
-      total = df.count()
-    }
-
     if (smallDatasetAccurately) {
+      total = df.count()
       logInfo(format(s"The whole dataset is [${total}] and the approxThreshold is ${approxThreshold}"))
       if (total == 0) {
         return df.sparkSession.emptyDataFrame
@@ -439,8 +432,7 @@ class SQLDataSummaryV2(override val uid: String) extends SQLAlg with MllibFuncti
       "blankValueRatio" -> emptyCount(schema),
       "nonNullCount" -> countNonNullValue(schema),
       "dataType" -> getDataType(schema),
-      "skewness" -> getSkewness(schema),
-      "totalCount" -> getTotalCount(schema, total)
+      "skewness" -> getSkewness(schema)
     )
     val processedSelectedMetrics = processSelectedMetrics(selectedMetrics)
     var newCols = processedSelectedMetrics.map(name => default_metrics.getOrElse(name, null)).filter(_ != null).flatten

@@ -21,7 +21,7 @@ import scala.collection.mutable
  *
  * @Author; Andie Huang
  * @Date: 2022/7/13 15:39
- *
+ *  模式分布，模式计数
  */
 class SQLPatternDistribution(override val uid: String) extends SQLAlg with MllibFunctions with Functions with BaseParams with ETAuth {
   def this() = this(BaseParams.randomUID())

@@ -16,6 +16,7 @@ import tech.mlsql.dsl.auth.dsl.mmlib.ETMethod.ETMethod
 
 /**
  * 13/02/2023 hellozepp(lisheng.zhanglin@163.com)
+ * 加载（dp、dm）
  */
 class SQLDigitalColumnConvert(override val uid: String) extends SQLAlg with MllibFunctions with Functions with BaseParams with ETAuth {
   final val sourceTable: Param[String] = new Param[String](this, "sourceTable",

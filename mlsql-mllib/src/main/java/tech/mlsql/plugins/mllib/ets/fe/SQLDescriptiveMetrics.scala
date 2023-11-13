@@ -19,6 +19,7 @@ import scala.util.parsing.json.{JSONArray, JSONObject}
 
 /**
  * 04/07/2022 hellozepp(lisheng.zhanglin@163.com)
+ * 频数分布
  */
 class SQLDescriptiveMetrics(override val uid: String) extends SQLAlg with MllibFunctions with Functions with BaseParams with ETAuth {
 
@@ -122,14 +123,14 @@ class SQLDescriptiveMetrics(override val uid: String) extends SQLAlg with MllibF
   }
 
   def getDescriptiveMetrics(df: DataFrame, metricSize: Int, params: Map[String, String]): Array[(String, String)] = {
-    val excludeEmpty = params.getOrElse(excludeEmptyVal.name, "true").toBoolean
+//    val excludeEmpty = params.getOrElse(excludeEmptyVal.name, "true").toBoolean
     df.schema.toArray.map(c => {
-      val sub_df = if (excludeEmpty) {
-        df.select(c.name).where(col(c.name).isNotNull).where(trim(col(c.name)) =!= "")
-      } else {
-        df.select(c.name)
-      }
-
+//      val sub_df = if (excludeEmpty) {
+//        df.select(c.name).where(col(c.name).isNotNull).where(trim(col(c.name)) =!= "")
+//      } else {
+//        df.select(c.name)
+//      }
+      val sub_df = df.select(c.name)
       import org.apache.spark.sql.functions
       val countRow: Dataset[Row] = sub_df.groupBy(col(c.name)).count().toDF("word", "count")
         .sort(functions.desc("count")).limit(metricSize)
