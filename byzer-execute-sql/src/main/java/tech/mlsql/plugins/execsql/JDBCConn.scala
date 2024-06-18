@@ -2,11 +2,11 @@ package tech.mlsql.plugins.execsql
 
 import org.apache.spark.sql.expressions.UserDefinedFunction
 import org.apache.spark.sql.{DataFrame, SparkSession}
+import streaming.dsl.ScriptSQLExec
 import streaming.dsl.mmlib.SQLAlg
 import streaming.dsl.mmlib.algs.Functions
 import streaming.dsl.mmlib.algs.param.{BaseParams, WowParams}
 import tech.mlsql.common.utils.serder.json.JSONTool
-
 import tech.mlsql.version.VersionCompatibility
 
 class JDBCConn(override val uid: String) extends SQLAlg with VersionCompatibility with Functions with WowParams {
@@ -21,14 +21,14 @@ class JDBCConn(override val uid: String) extends SQLAlg with VersionCompatibilit
     // !conn remove gpconn;
     args match {
       case List("remove", connName) =>
-        JobUtils.removeConnection(connName)
+        JobUtils.removeConnection(ScriptSQLExec.context().owner + "_" + connName)
 
       case connName :: left =>
         val options = left.map { item =>
           val Array(key, value) = item.split("=", 2)
           (key, value)
         }.toMap
-        JobUtils.newConnection(connName, options)
+        JobUtils.newConnection(ScriptSQLExec.context().owner + "_" + connName, options)
     }
 
     df.sparkSession.emptyDataFrame

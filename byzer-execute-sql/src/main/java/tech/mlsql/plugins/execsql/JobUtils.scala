@@ -1,5 +1,6 @@
 package tech.mlsql.plugins.execsql
 
+import java.sql.ResultSetMetaData
 import java.util.UUID
 import java.util.concurrent.{Callable, ConcurrentHashMap, Executors, TimeUnit}
 import com.fasterxml.jackson.databind.ObjectMapper
@@ -24,7 +25,7 @@ import org.apache.parquet.hadoop.ParquetFileWriter
 import scala.collection.JavaConverters._
 import org.apache.parquet.avro.AvroParquetWriter
 import org.apache.avro.generic.GenericData
-import org.apache.avro.SchemaBuilder
+import org.apache.avro.{Schema, SchemaBuilder}
 import org.apache.parquet.hadoop.ParquetWriter
 import org.apache.parquet.hadoop.metadata.CompressionCodecName
 
@@ -40,25 +41,25 @@ object JobUtils extends Logging {
   private val connectionPool = new ConcurrentHashMap[String, ConnectionHolder]()
   private val cacheFiles = CacheBuilder.newBuilder().
     maximumSize(100000).removalListener(new RemovalListener[String, java.util.List[String]]() {
-      override def onRemoval(notification: RemovalNotification[String, util.List[String]]): Unit = {
-        val files = notification.getValue
-        if (files != null) {
-          val fs = FileSystem.get(HDFSOperatorV2.hadoopConfiguration)
-          files.asScala.foreach { file =>
-            try {
-              logInfo(s"remove cache file ${file}")
-              fs.delete(new Path(file), true)
-              // delete the .crc file
-              deleteCRCFile(fs,file)
-            } catch {
-              case e: Exception =>
-                logError(s"remove cache file ${file} failed", e)
-            }
-
+    override def onRemoval(notification: RemovalNotification[String, util.List[String]]): Unit = {
+      val files = notification.getValue
+      if (files != null) {
+        val fs = FileSystem.get(HDFSOperatorV2.hadoopConfiguration)
+        files.asScala.foreach { file =>
+          try {
+            logInfo(s"remove cache file ${file}")
+            fs.delete(new Path(file), true)
+            // delete the .crc file
+            deleteCRCFile(fs, file)
+          } catch {
+            case e: Exception =>
+              logError(s"remove cache file ${file} failed", e)
           }
+
         }
       }
-    }).
+    }
+  }).
     expireAfterWrite(2, TimeUnit.DAYS).
     build[String, java.util.List[String]]()
 
@@ -120,7 +121,7 @@ object JobUtils extends Logging {
     }
   }
 
-  def deleteCRCFile(fs:FileSystem,path: String) = {
+  def deleteCRCFile(fs: FileSystem, path: String) = {
     // get file name from path
     val fileName = path.split("/").last
     val crcFileName = "." + path + ".crc"
@@ -240,79 +241,60 @@ object JobUtils extends Logging {
       stat.setFetchSize(10000)
       connect.setAutoCommit(false)
     }
-    val rs = stat.executeQuery()
-
-    // Define the Parquet schema dynamically based on ResultSet metadata
-    val metaData = rs.getMetaData
-    // 创建Avro的SchemaBuilder
-    val avroSchemaBuilder = SchemaBuilder.record("record").fields()
-
-    // 遍历ResultSet的元数据，为Avro Schema添加字段
-    for (i <- 1 to metaData.getColumnCount) {
-      val columnName = metaData.getColumnLabel(i)
-      val dataType = metaData.getColumnType(i)
-      val SchemaBuilderNullable = SchemaBuilder.builder().nullable()
-      val avroFieldType = dataType match {
-        case java.sql.Types.INTEGER => SchemaBuilderNullable.intType()
-        case java.sql.Types.BIGINT => SchemaBuilderNullable.longType()
-        case java.sql.Types.DOUBLE => SchemaBuilderNullable.doubleType()
-        case java.sql.Types.FLOAT => SchemaBuilderNullable.floatType()
-        case java.sql.Types.VARCHAR | java.sql.Types.CHAR => SchemaBuilderNullable.stringType()  // 使用 nullable() 处理可能为 null 的字段
-        case java.sql.Types.BINARY => SchemaBuilderNullable.bytesType()
-        case java.sql.Types.BOOLEAN => SchemaBuilderNullable.booleanType()
-        case java.sql.Types.DATE => SchemaBuilderNullable.intType() // 根据实际情况调整
-        // 其他数据类型的处理，将不支持的类型映射为 Avro 的字符串类型
-        case _ => SchemaBuilderNullable.stringType()
-      }
-
-      avroSchemaBuilder.name(columnName).`type`(avroFieldType).noDefault()
-    }
-    // 构建最终的Avro Schema
-    val avroSchema = avroSchemaBuilder.endRecord()
-
-    // get the time with format yyyy-MM-dd-HH-mm-ss
-    val time = DateTime.now().toString("yyyyMMddHHmmss")
-    val fileName = s"${UUID.randomUUID().toString}-${time}.parquet"
-    val filePath = new Path(cacheDir.get(), fileName)
-    val compressionCodec = CompressionCodecName.SNAPPY
-
-    // 创建Parquet文件的Writer
-    val writer: ParquetWriter[GenericData.Record] = AvroParquetWriter.builder[GenericData.Record](filePath)
-      .withWriteMode(ParquetFileWriter.Mode.OVERWRITE)
-      .withCompressionCodec(compressionCodec).withSchema(avroSchema)
-      .build()
-    val record = new GenericData.Record(avroSchema)
     try {
-      while (rs.next()) {
+      val rs = stat.executeQuery()
+      // Define the Parquet schema dynamically based on ResultSet metadata
+      val metaData = rs.getMetaData
+      val avroSchema = setAvroSchema(metaData)
 
-        for (i <- 1 to metaData.getColumnCount) {
-          val columnName = metaData.getColumnLabel(i)
-          val columnValue = rs.getObject(i)
-          record.put(columnName, columnValue)
+      // get the time with format yyyy-MM-dd-HH-mm-ss
+      val time = DateTime.now().toString("yyyyMMddHHmmss")
+      val fileName = s"${UUID.randomUUID().toString}-${time}.parquet"
+      val filePath = new Path(cacheDir.get(), fileName)
+      val compressionCodec = CompressionCodecName.SNAPPY
+
+      // 创建Parquet文件的Writer
+      val writer: ParquetWriter[GenericData.Record] = AvroParquetWriter.builder[GenericData.Record](filePath)
+        .withWriteMode(ParquetFileWriter.Mode.OVERWRITE)
+        .withCompressionCodec(compressionCodec).withSchema(avroSchema)
+        .build()
+      val record = new GenericData.Record(avroSchema)
+      try {
+        while (rs.next()) {
+
+          for (i <- 1 to metaData.getColumnCount) {
+            val columnName = metaData.getColumnLabel(i)
+            val columnValue = rs.getObject(i)
+            record.put(columnName, columnValue)
+          }
+          writer.write(record)
+
         }
-        writer.write(record)
-
+      } finally {
+        try_close(() => {
+          writer.close()
+        })
+        try_close(() => {
+          rs.close()
+        })
+        try_close(() => {
+          stat.close()
+        })
       }
+      // put the cache file path into cacheFiles, so when the user
+      // remove the connection, we can delete the cache file
+      val files = cacheFiles.get(connName, new Callable[java.util.List[String]] {
+        override def call(): java.util.List[String] = {
+          new util.LinkedList[String]()
+        }
+      })
+      files.add(new Path(cacheDir.get(), fileName).toString)
+      session.read.parquet(new Path(cacheDir.get(), fileName).toString)
     } finally {
-      try_close(() => {
-        writer.close()
-      })
-      try_close(() => {
-        rs.close()
-      })
-      try_close(() => {
-        stat.close()
-      })
-    }
-    // put the cache file path into cacheFiles, so when the user
-    // remove the connection, we can delete the cache file
-    val files = cacheFiles.get(connName, new Callable[java.util.List[String]] {
-      override def call(): java.util.List[String] = {
-        new util.LinkedList[String]()
+      if (connectionHolder.options("driver").equals("org.postgresql.Driver")) {
+        connect.commit()
       }
-    })
-    files.add(new Path(cacheDir.get(), fileName).toString)
-    session.read.parquet(new Path(cacheDir.get(), fileName).toString)
+    }
   }
 
 
@@ -332,7 +314,7 @@ object JobUtils extends Logging {
           logInfo(s"clean file ${file.getPath.toString}")
           fs.delete(file.getPath, true)
           // delete the .crc file
-          deleteCRCFile(fs,file.getPath.toString)
+          deleteCRCFile(fs, file.getPath.toString)
         }
       }
 
@@ -354,6 +336,7 @@ object JobUtils extends Logging {
   }
 
   def removeConnection(name: String) = synchronized {
+    logInfo(s"remove connection ${name}")
     if (JobUtils.connectionPool.containsKey(name)) {
       val connection = JobUtils.connectionPool.get(name).connection
       try_close(() => {
@@ -362,5 +345,32 @@ object JobUtils extends Logging {
       JobUtils.connectionPool.remove(name)
       cacheFiles.invalidate(name)
     }
+  }
+
+  def setAvroSchema(metaData: ResultSetMetaData): Schema = {
+    // 创建Avro的SchemaBuilder
+    val avroSchemaBuilder = SchemaBuilder.record("record").fields()
+
+    // 遍历ResultSet的元数据，为Avro Schema添加字段
+    for (i <- 1 to metaData.getColumnCount) {
+      val columnName = metaData.getColumnLabel(i)
+      val dataType = metaData.getColumnType(i)
+      val SchemaBuilderNullable = SchemaBuilder.builder().nullable()
+      val avroFieldType = dataType match {
+        case java.sql.Types.INTEGER => SchemaBuilderNullable.intType()
+        case java.sql.Types.BIGINT => SchemaBuilderNullable.longType()
+        case java.sql.Types.DOUBLE => SchemaBuilderNullable.doubleType()
+        case java.sql.Types.FLOAT => SchemaBuilderNullable.floatType()
+        case java.sql.Types.VARCHAR | java.sql.Types.CHAR => SchemaBuilderNullable.stringType() // 使用 nullable() 处理可能为 null 的字段
+        case java.sql.Types.BINARY => SchemaBuilderNullable.bytesType()
+        case java.sql.Types.BOOLEAN => SchemaBuilderNullable.booleanType()
+        // 其他数据类型的处理，将不支持的类型映射为 Avro 的字符串类型
+        case _ => SchemaBuilderNullable.stringType()
+      }
+
+      avroSchemaBuilder.name(columnName).`type`(avroFieldType).noDefault()
+    }
+    // 构建最终的Avro Schema
+    avroSchemaBuilder.endRecord()
   }
 }
